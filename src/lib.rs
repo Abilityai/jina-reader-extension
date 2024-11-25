@@ -1,33 +1,46 @@
-use std::sync::Arc;
-use wasm_bindgen_futures::spawn_local;
-use web_sys::console;
-use zed_extension_api as zed;
-use zed::{
+use zed_extension_api::{
+    http_client::{HttpMethod, HttpRequestBuilder},
     Extension, SlashCommand, SlashCommandOutput, SlashCommandOutputSection, Worktree,
 };
-use serde::Deserialize;
 
-#[derive(Debug, Deserialize)]
-struct JinaResponse {
-    text: String,
+pub trait HttpHandler: Send + Sync {
+    fn fetch(&self, url: &str) -> Result<String, String>;
 }
 
-use std::sync::Mutex;
+pub struct ZedHttpHandler;
 
-type SharedState = Arc<Mutex<Option<Result<String, String>>>>;
+impl HttpHandler for ZedHttpHandler {
+    fn fetch(&self, url: &str) -> Result<String, String> {
+        let request = HttpRequestBuilder::new()
+            .method(HttpMethod::Get)
+            .url(url.to_string())
+            .build()
+            .map_err(|e| format!("Failed to build request: {}", e))?;
+
+        let response = request
+            .fetch()
+            .map_err(|e| format!("HTTP request failed: {}", e))?;
+
+        String::from_utf8(response.body).map_err(|e| format!("bytes should be valid utf8: {}", e))
+    }
+}
 
 pub struct JinaReaderExtension {
-    client: reqwest::Client,
-    state: SharedState,
+    http_handler: Box<dyn HttpHandler>,
 }
 
-zed::register_extension!(JinaReaderExtension);
+impl JinaReaderExtension {
+    pub fn with_http_handler(http_handler: Box<dyn HttpHandler>) -> Self {
+        Self { http_handler }
+    }
+}
+
+zed_extension_api::register_extension!(JinaReaderExtension);
 
 impl Extension for JinaReaderExtension {
     fn new() -> Self {
         Self {
-            client: reqwest::Client::new(),
-            state: Arc::new(Mutex::new(None)),
+            http_handler: Box::new(ZedHttpHandler),
         }
     }
 
@@ -37,54 +50,27 @@ impl Extension for JinaReaderExtension {
         args: Vec<String>,
         _worktree: Option<&Worktree>,
     ) -> Result<SlashCommandOutput, String> {
-        match command.name.as_str() {
-            "r" => {
-                if args.is_empty() {
-                    return Err("Please provide a URL.".to_string());
-                }
-
-                let url = args[0].clone();
-                let client = self.client.clone();
-                let state = self.state.clone();
-
-                spawn_local(async move {
-                    let jina_url = format!("https://r.jina.ai/{}", url);
-
-                    let result = match client.get(&jina_url).send().await {
-                        Ok(response) => {
-                            match response.json::<JinaResponse>().await {
-                                Ok(jina_response) => {
-                                    console::log_1(&"Successfully fetched content".into());
-                                    Ok(jina_response.text)
-                                }
-                                Err(e) => {
-                                    let error = format!("Failed to parse response: {}", e);
-                                    console::log_1(&error.clone().into());
-                                    Err(error)
-                                }
-                            }
-                        }
-                        Err(e) => {
-                            let error = format!("Request failed: {}", e);
-                            console::log_1(&error.clone().into());
-                            Err(error)
-                        }
-                    };
-
-                    if let Ok(mut state) = state.lock() {
-                        *state = Some(result);
-                    }
-                });
-
-                Ok(SlashCommandOutput {
-                    sections: vec![SlashCommandOutputSection {
-                        range: (0..22u32).into(),
-                        label: "Jina Reader".to_string(),
-                    }],
-                    text: "Fetching content...".to_string(),
-                })
+        if command.name == "r" {
+            if args.is_empty() {
+                return Err("Please provide a URL.".to_string());
             }
-            _ => Err(format!("Unknown slash command: {}", command.name)),
+
+            let url = args[0].clone();
+            let jina_url = format!("https://r.jina.ai/{}", url);
+
+            // Build and send the HTTP request synchronously
+            let text = self.http_handler.fetch(&jina_url)?;
+
+            // Prepare SlashCommandOutput
+            Ok(SlashCommandOutput {
+                sections: vec![SlashCommandOutputSection {
+                    range: (0..text.len()).into(),
+                    label: "Jina Reader".to_string(),
+                }],
+                text,
+            })
+        } else {
+            Err(format!("Unknown slash command: {}", command.name))
         }
     }
 }
@@ -111,9 +97,20 @@ mod tests {
         assert_eq!(result.unwrap_err(), "Please provide a URL.");
     }
 
+    struct MockHttpHandler;
+
+    impl HttpHandler for MockHttpHandler {
+        fn fetch(&self, _url: &str) -> Result<String, String> {
+            println!("{}", "hello");
+            Ok("Mocked response text".to_string())
+        }
+    }
+
     #[test]
     fn test_run_slash_command_with_url() {
-        let extension = JinaReaderExtension::new();
+        let mock_handler = Box::new(MockHttpHandler);
+        let extension = JinaReaderExtension::with_http_handler(mock_handler);
+
         let result = extension.run_slash_command(
             SlashCommand {
                 name: "r".to_string(),
@@ -127,7 +124,7 @@ mod tests {
 
         assert!(result.is_ok());
         let output = result.unwrap();
-        assert_eq!(output.text, "Fetching content...");
+        assert_eq!(output.text, "Mocked response text");
     }
 
     #[test]
