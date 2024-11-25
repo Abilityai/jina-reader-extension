@@ -1,0 +1,36 @@
+# Rust specific ignores
+/target/
+**/*.rs.bk
+*.wasm
+
+# Debug files
+*.pdb
+
+# IDE specific files
+.idea/
+.vscode/
+*.swp
+*.swo
+
+# Build output
+/debug/
+/release/
+
+# Dependencies
+/vendor/
+
+# Documentation
+/doc/
+/target/doc/
+
+# Environment
+.env
+.env.local
+.env.*.local
+
+# Generated files
+*.generated.rs
+
+# System Files
+.DS_Store
+Thumbs.db
