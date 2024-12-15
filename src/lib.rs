@@ -61,11 +61,18 @@ impl Extension for JinaReaderExtension {
             // Build and send the HTTP request synchronously
             let text = self.http_handler.fetch(&jina_url)?;
 
+            let first_line = text.lines().next().unwrap_or("").trim_start_matches("Title: ");
+            let label = if first_line.len() > 180 {
+                format!("{}...", &first_line[..180])
+            } else {
+                first_line.to_string()
+            };
+
             // Prepare SlashCommandOutput
             Ok(SlashCommandOutput {
                 sections: vec![SlashCommandOutputSection {
                     range: (0..text.len()).into(),
-                    label: "Jina Reader".to_string(),
+                    label,
                 }],
                 text,
             })
